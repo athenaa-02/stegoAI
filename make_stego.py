@@ -97,7 +97,7 @@ def main() -> None:
     # Controls how much data you hide (bytes).
     # Bigger payload => easier to detect (stronger stego signal).
     # Start with 1024 bytes, then try 128, 256, 512 to make it harder.
-    payload_bytes = 256
+    payload_bytes = 16384
 
     # CSV output for later training
     labels_csv = base / "dataset" / "labels.csv"

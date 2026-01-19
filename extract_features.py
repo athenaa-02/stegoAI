@@ -74,6 +74,26 @@ def residual_stats(gray: np.ndarray, blur_size: int = 3) -> Tuple[float, float, 
     kurt = m4 / (res_std ** 4)
     return res_mean, res_std, float(kurt)
 
+def block_residual_variance_features(gray: np.ndarray, blur_size: int = 3, block: int = 8) -> Tuple[float, float]:
+    """
+    Compute residual = gray - blur(gray), then compute variance per block.
+    Returns (mean_block_var, std_block_var).
+    """
+    blurred = uniform_filter(gray, size=blur_size, mode="reflect")
+    res = gray - blurred
+
+    h, w = res.shape
+    h2 = (h // block) * block
+    w2 = (w // block) * block
+    res = res[:h2, :w2]
+
+    # reshape into blocks: (h2/block, block, w2/block, block)
+    rb = res.reshape(h2 // block, block, w2 // block, block)
+    # variance within each block
+    block_var = rb.var(axis=(1, 3))  # shape (h2/block, w2/block)
+
+    return float(block_var.mean()), float(block_var.std())
+
 
 def neighbor_diff_stats(gray: np.ndarray) -> Tuple[float, float]:
     """
@@ -103,6 +123,11 @@ def extract_features_for_image(img_path: Path) -> Dict[str, float]:
     mad, sad = neighbor_diff_stats(gray)
     f["neighbor_absdiff_mean"] = mad
     f["neighbor_absdiff_std"] = sad
+
+    bv_mean, bv_std = block_residual_variance_features(gray, blur_size=3, block=8)
+    f["block_res_var_mean"] = bv_mean
+    f["block_res_var_std"] = bv_std
+
 
     # Basic global stats (cheap, often helpful)
     f["gray_mean"] = float(gray.mean())
