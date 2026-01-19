@@ -9,6 +9,7 @@ from typing import Iterable, List, Tuple
 from PIL import Image
 
 
+
 # ---------- Utility: bytes <-> bits ----------
 
 def bytes_to_bits(data: bytes) -> List[int]:
