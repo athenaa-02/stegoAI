@@ -10,7 +10,7 @@ from scipy.ndimage import uniform_filter
 
 
 def load_image_rgb(path: Path) -> np.ndarray:
-    """Load image as RGB uint8 array of shape (H, W, 3)."""
+    """Load image as RGB uint8 array (H, W, 3)."""
     with Image.open(path) as im:
         im = im.convert("RGB")
         arr = np.array(im, dtype=np.uint8)
@@ -18,25 +18,22 @@ def load_image_rgb(path: Path) -> np.ndarray:
 
 
 def to_gray(img_rgb: np.ndarray) -> np.ndarray:
-    """Convert RGB uint8 image to grayscale float32."""
+    """Convert RGB image to grayscale float."""
     r = img_rgb[..., 0].astype(np.float32)
     g = img_rgb[..., 1].astype(np.float32)
     b = img_rgb[..., 2].astype(np.float32)
-    # Standard luminance approximation
     return 0.299 * r + 0.587 * g + 0.114 * b
 
 
+# ---------- Basic steganalysis features ----------
+
 def lsb_ratio(img_rgb: np.ndarray) -> float:
-    """Ratio of 1s in the LSBs across all RGB channels."""
+    """Ratio of LSB=1 across all RGB channels."""
     lsb = img_rgb & 1
     return float(lsb.mean())
 
 
 def even_odd_imbalance(img_rgb: np.ndarray) -> float:
-    """
-    Measures imbalance between even and odd pixel values.
-    For perfectly balanced parity, this is near 0.
-    """
     vals = img_rgb.reshape(-1)
     even = np.sum((vals % 2) == 0)
     odd = vals.size - even
@@ -44,40 +41,39 @@ def even_odd_imbalance(img_rgb: np.ndarray) -> float:
 
 
 def chi_square_parity(img_rgb: np.ndarray) -> float:
-    """
-    Simple chi-square statistic comparing counts of even vs odd.
-    Stego tends to push parity toward balance depending on embedding.
-    """
     vals = img_rgb.reshape(-1)
     even = np.sum((vals % 2) == 0)
     odd = vals.size - even
     expected = vals.size / 2.0
-    # avoid divide-by-zero
-    chi = ((even - expected) ** 2 + (odd - expected) ** 2) / max(expected, 1e-9)
-    return float(chi)
+    return float(((even - expected) ** 2 + (odd - expected) ** 2) / max(expected, 1e-9))
 
+
+# ---------- Residual-based features ----------
 
 def residual_stats(gray: np.ndarray, blur_size: int = 3) -> Tuple[float, float, float]:
-    """
-    Compute stats of residual = gray - blur(gray).
-    Returns (res_mean, res_std, res_kurtosis_approx).
-    """
-    # uniform_filter is fast and stable
     blurred = uniform_filter(gray, size=blur_size, mode="reflect")
     res = gray - blurred
 
     res_mean = float(res.mean())
     res_std = float(res.std() + 1e-9)
 
-    # Simple kurtosis (not unbiased; good enough for features)
     m4 = float(np.mean((res - res.mean()) ** 4))
     kurt = m4 / (res_std ** 4)
     return res_mean, res_std, float(kurt)
 
-def block_residual_variance_features(gray: np.ndarray, blur_size: int = 3, block: int = 8) -> Tuple[float, float]:
+
+def neighbor_diff_stats(gray: np.ndarray) -> Tuple[float, float]:
+    right = np.abs(gray[:, 1:] - gray[:, :-1])
+    down = np.abs(gray[1:, :] - gray[:-1, :])
+    diffs = np.concatenate([right.reshape(-1), down.reshape(-1)])
+    return float(diffs.mean()), float(diffs.std())
+
+
+def block_residual_variance_features(
+    gray: np.ndarray, blur_size: int = 3, block: int = 8
+) -> Tuple[float, float]:
     """
-    Compute residual = gray - blur(gray), then compute variance per block.
-    Returns (mean_block_var, std_block_var).
+    Strong local feature: block-wise residual variance.
     """
     blurred = uniform_filter(gray, size=blur_size, mode="reflect")
     res = gray - blurred
@@ -87,24 +83,13 @@ def block_residual_variance_features(gray: np.ndarray, blur_size: int = 3, block
     w2 = (w // block) * block
     res = res[:h2, :w2]
 
-    # reshape into blocks: (h2/block, block, w2/block, block)
     rb = res.reshape(h2 // block, block, w2 // block, block)
-    # variance within each block
-    block_var = rb.var(axis=(1, 3))  # shape (h2/block, w2/block)
+    block_var = rb.var(axis=(1, 3))
 
     return float(block_var.mean()), float(block_var.std())
 
 
-def neighbor_diff_stats(gray: np.ndarray) -> Tuple[float, float]:
-    """
-    Neighbor differences catch correlation changes.
-    Returns (mean_abs_diff, std_abs_diff) using right and down neighbors.
-    """
-    right = np.abs(gray[:, 1:] - gray[:, :-1])
-    down = np.abs(gray[1:, :] - gray[:-1, :])
-    diffs = np.concatenate([right.reshape(-1), down.reshape(-1)])
-    return float(diffs.mean()), float(diffs.std())
-
+# ---------- Feature extraction per image ----------
 
 def extract_features_for_image(img_path: Path) -> Dict[str, float]:
     img_rgb = load_image_rgb(img_path)
@@ -115,26 +100,26 @@ def extract_features_for_image(img_path: Path) -> Dict[str, float]:
     f["even_odd_imbalance"] = even_odd_imbalance(img_rgb)
     f["chi_square_parity"] = chi_square_parity(img_rgb)
 
-    res_mean, res_std, res_kurt = residual_stats(gray, blur_size=3)
+    res_mean, res_std, res_kurt = residual_stats(gray)
     f["res_mean"] = res_mean
     f["res_std"] = res_std
     f["res_kurtosis"] = res_kurt
 
-    mad, sad = neighbor_diff_stats(gray)
-    f["neighbor_absdiff_mean"] = mad
-    f["neighbor_absdiff_std"] = sad
+    nad_mean, nad_std = neighbor_diff_stats(gray)
+    f["neighbor_absdiff_mean"] = nad_mean
+    f["neighbor_absdiff_std"] = nad_std
 
-    bv_mean, bv_std = block_residual_variance_features(gray, blur_size=3, block=8)
+    bv_mean, bv_std = block_residual_variance_features(gray)
     f["block_res_var_mean"] = bv_mean
     f["block_res_var_std"] = bv_std
 
-
-    # Basic global stats (cheap, often helpful)
     f["gray_mean"] = float(gray.mean())
     f["gray_std"] = float(gray.std())
 
     return f
 
+
+# ---------- Main ----------
 
 def main() -> None:
     base = Path(__file__).resolve().parent
@@ -145,28 +130,22 @@ def main() -> None:
     if not labels_csv.exists():
         raise SystemExit(f"Missing: {labels_csv}")
 
+    with open(labels_csv, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        items = list(reader)
+
     rows_out: List[Dict[str, str]] = []
     feature_names: List[str] = []
 
-    # Read labels
-    with open(labels_csv, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        if reader.fieldnames is None or "path" not in reader.fieldnames or "label" not in reader.fieldnames:
-            raise SystemExit("labels.csv must have headers: path,label")
-
-        items = list(reader)
-
-    total = len(items)
     processed = 0
     skipped = 0
 
-    for i, item in enumerate(items, start=1):
-        rel_path = item["path"].strip()
-        label = item["label"].strip()
+    for item in items:
+        rel_path = item["path"]
+        label = item["label"]
 
         img_path = dataset_dir / rel_path
         if not img_path.exists():
-            print(f"[SKIP] Missing file: {img_path}")
             skipped += 1
             continue
 
@@ -176,28 +155,26 @@ def main() -> None:
             if not feature_names:
                 feature_names = sorted(feats.keys())
 
-            out_row: Dict[str, str] = {"path": rel_path, "label": label}
+            row = {"path": rel_path, "label": label}
             for k in feature_names:
-                out_row[k] = f"{feats[k]:.10f}"
-            rows_out.append(out_row)
+                row[k] = f"{feats[k]:.10f}"
 
+            rows_out.append(row)
             processed += 1
-            if i % 100 == 0 or i == total:
-                print(f"Progress: {i}/{total} (processed={processed}, skipped={skipped})")
 
         except Exception as e:
             print(f"[SKIP] {rel_path}: {e}")
             skipped += 1
 
-    # Write features.csv
-    fieldnames = ["path", "label"] + feature_names
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        w.writerows(rows_out)
+        writer = csv.DictWriter(
+            f, fieldnames=["path", "label"] + feature_names
+        )
+        writer.writeheader()
+        writer.writerows(rows_out)
 
-    print(f"\nDone. Wrote {len(rows_out)} rows to: {out_csv}")
-    print(f"Processed={processed}, skipped={skipped}")
+    print(f"Done. Processed={processed}, skipped={skipped}")
+    print(f"Features saved to: {out_csv}")
 
 
 if __name__ == "__main__":
