@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-import secrets
+import numpy as np
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
@@ -100,6 +100,7 @@ def main() -> None:
 
     count = 0
     skipped = 0
+    rng = np.random.default_rng(42)
 
     for idx, img_path in enumerate(iter_images(cover_dir), start=1):
         print(f"[{idx}] Processing: {img_path.name}")
@@ -108,7 +109,7 @@ def main() -> None:
                 img = img.convert("RGB")
                 img.load()
 
-            payload = secrets.token_bytes(payload_bytes)
+            payload = rng.bytes(payload_bytes)
             stego = embed_lsb_rgb(img, payload)
 
             out_name = f"{img_path.stem}_stego.png"
